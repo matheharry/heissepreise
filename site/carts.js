@@ -1,157 +1,81 @@
-function downloadFile(filename, content) {
-    const blob = new Blob([content], { type: 'text/plain' });
-    const element = document.createElement('a');
-    element.href = URL.createObjectURL(blob);
-    element.download = filename;
-    element.style.display = 'none';
-    document.body.appendChild(element);
-    element.click();
-    document.body.removeChild(element);
-    URL.revokeObjectURL(element.href);
+const { downloadJSON, today } = require("./js/misc");
+const model = require("./model");
+require("./views");
+const { __ } = require("./browser_i18n");
+
+const { STORE_KEYS } = require("./model/stores");
+const { ProgressBar } = require("./views/progress-bar");
+const progressBar = new ProgressBar(STORE_KEYS.length);
+
+function newCart() {
+    let name = prompt(__("Carts_Name für Warenkorb eingeben:"));
+    if (!name || name.trim().length == 0) return;
+    name = name.trim();
+    if (model.carts.carts.some((cart) => cart.name === name)) {
+        alert(__("Carts_Warenkorb mit Namen '{{name}}' existiert bereits", { name: name }));
+        return;
+    }
+    model.carts.add(name);
+    location.href = `cart.html?name=${encodeURIComponent(name)}`;
 }
 
-async function load() {
-    const items = await loadItems();
-    lookup = {};
-    for (item of items) {
-        lookup[item.id] = item;
-    }
+function isIterable(obj) {
+    return typeof obj[Symbol.iterator] === "function";
+}
 
-    // Update carts with latest price info
-    for (cart of carts) {
-        const items = [];
-        for (cartItem of cart.items) {
-            const item = lookup[cartItem.id];
-            if (!item) continue;
-            items.push(item);
-        }
-        cart.items = items;
+function importCart(importedCart) {
+    const items = [];
+    for (const cartItem of importedCart.items) {
+        const item = model.items.lookup[cartItem.store + cartItem.id];
+        if (!item) continue;
+        items.push(item);
     }
-    saveCarts();
+    importedCart.items = items;
 
-    if (carts.findIndex(cart => cart.name == "Momentum Eigenmarken Vergleich") == -1) {
-        response = await fetch("momentum-cart.json");
-        momentumCart = await response.json();
-        carts.unshift(momentumCart);
-        saveCarts();
-    }
-
-    const newCartButton = document.querySelector("#newcart");
-    newCartButton.addEventListener("click", () => {
-        let name = prompt("Name für Warenkorb eingeben:");
-        if (name.length == 0) return;
-        for (cart of carts) {
-            if (cart.name == name) {
-                alert("Warenkorb mit Namen '" + name + "' existiert bereits");
-                return;
+    const index = model.carts.carts.findIndex((cart) => cart.name === importedCart.name);
+    if (index != -1) {
+        let newName = importedCart.name;
+        while (true) {
+            newName = prompt(
+                __("Carts_Warenkorb '{{name}}' existiert bereits. Bitte einen anderen Namen für den zu importierenden Warenkorb eingeben", {
+                    name: importedCart.name,
+                }),
+                importedCart.name + today()
+            );
+            if (!newName || newName.trim().length == 0) return;
+            newName = newName.trim();
+            if (newName != importedCart.name) {
+                importedCart.name = newName;
+                model.carts.carts.push(importedCart);
+                break;
             }
         }
-        addCart(name);
-        location.href = "/cart.html?name=" + name;
-    });
+    } else {
+        model.carts.carts.push(importedCart);
+    }
+    model.carts.save();
+}
 
-    const exportButton = document.querySelector("#export");
-    exportButton.addEventListener("click", () => {
-        downloadFile("carts.json", JSON.stringify(carts, null, 2));
-    });
+function importCarts(importedCarts) {
+    if (isIterable(importedCarts)) {
+        importedCarts.forEach((cart) => importCart(cart));
+    } else {
+        importCart(importedCarts);
+    }
+}
 
-    const importButton = document.querySelector("#import");
-    importButton.addEventListener("click", () => {
-        document.getElementById('fileInput').value = null
-        document.getElementById('fileInput').click();
-    });
-
-    document.querySelector("#fileInput").addEventListener('change', function (event) {
-        const file = event.target.files[0];
+(async () => {
+    await model.load(() => progressBar.addStep());
+    document.querySelector("#carts").model = model.carts;
+    document.querySelector("#new").addEventListener("click", () => newCart());
+    document.querySelector("#export").addEventListener("click", () => downloadJSON("carts.json", model.carts.carts));
+    document.querySelector("#import").addEventListener("click", () => document.querySelector("#fileInput").click());
+    document.querySelector("#fileInput").addEventListener("change", function (event) {
         const reader = new FileReader();
-        reader.onload = function (event) {
-            const contents = event.target.result;
-            const importedCarts = JSON.parse(contents);
-            for (importedCart of importedCarts) {
-                const items = [];
-                for (cartItem of cart.items) {
-                    const item = lookup[cartItem.id];
-                    if (!item) continue;
-                    items.push(item);
-                }
-                importedCart.items = items;
-
-                let index = carts.findIndex(cart => cart.name == importedCart.name);
-                if (index != -1) {
-                    if (confirm("Existierenden Warenkorb '" + importedCart.name + " überschreiben?")) {
-                        carts[index] = importedCart;
-                    }
-                } else {
-                    carts.push(importedCart);
-                }
-            }
-            saveCarts();
-            showCarts(lookup);
+        reader.onload = (event) => {
+            const importedCarts = JSON.parse(event.target.result);
+            importCarts(importedCarts);
         };
-        reader.readAsText(file);
+        reader.readAsText(event.target.files[0]);
     });
-
-    showCarts(lookup);
-}
-
-function showCarts(lookup) {
-    const cartsTable = document.querySelector("#carts");
-    cartsTable.innerHTML = "";
-    cartsTable.appendChild(dom("thead", `
-        <tr>
-            <th>Name</th>
-            <th>Produkte</th>
-            <th>Preis</th>
-            <th></th>
-        </tr>
-    `));
-
-    carts.forEach(cart => {
-        let oldPrice = 0;
-        let currPrice = 0;
-        let link = cart.name + ";"
-        for (cartItem of cart.items) {
-            const item = lookup[cartItem.id];
-            if (!item) continue;
-            oldPrice += item.priceHistory[item.priceHistory.length - 1].price;
-            currPrice += item.priceHistory[0].price;
-            link += item.id + ";";
-        }
-        const increase = Math.round((currPrice - oldPrice) / oldPrice * 100);
-
-        const row = dom("tr", ``);
-
-        const nameDom = dom("td", `<a href="cart.html?name=${cart.name}">${cart.name}</a>`);
-        nameDom.setAttribute("data-label", "Name");
-        row.appendChild(nameDom);
-
-        const itemsDom = dom("td", cart.items.length);
-        itemsDom.setAttribute("data-label", "Produkte");
-        row.appendChild(itemsDom);
-
-        const priceDom = dom("td", `<span style="color: ${currPrice > oldPrice ? "red" : "green"}">${currPrice.toFixed(2)} ${(increase > 0 ? "+" : "") + increase + "%"}`);
-        priceDom.setAttribute("data-label", "Preis");
-        row.appendChild(priceDom);
-
-        const actionsDom = dom("td", ``);
-        const linkDom = dom("a", "Teilen");
-        linkDom.setAttribute("href", "cart.html?cart=" + link);
-        actionsDom.appendChild(linkDom);
-
-        if (cart.name != "Momentum Eigenmarken Vergleich") {
-            let deleteButton = dom("input");
-            deleteButton.setAttribute("type", "button");
-            deleteButton.setAttribute("value", "Löschen");
-            actionsDom.appendChild(deleteButton);
-
-            deleteButton.addEventListener("click", () => {
-                removeCart(cart.name);
-                showCarts(lookup);
-            });
-        }
-        row.appendChild(actionsDom);
-        cartsTable.appendChild(row);
-    });
-}
-
-load();
+})();

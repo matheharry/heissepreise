@@ -1,11 +1,20 @@
 const fs = require("fs");
 const analysis = require("./analysis.js");
-const dataDir = process?.argv?.[2] ?? "docker/data"
+const h43z = require("./h43z");
+const dataDir = process?.argv?.[2] ?? "data";
+const h43zFile = process?.argv?.[3] ?? null;
 console.log("Restoring data from raw data.");
 (async function () {
-    /*console.log("Items: " + JSON.parse(fs.readFileSync("docker/data/latest-canonical.json")).length);
-    await analysis.updateData(dataDir);
-    fs.copyFileSync(`${dataDir}/latest-canonical.json`, `${dataDir}/latest-canonical-old.json`);*/
-    fs.writeFileSync(`${dataDir}/latest-canonical.json`, JSON.stringify(analysis.replay(dataDir), null, 2));
-    console.log(`Wrote ${JSON.parse(fs.readFileSync(`${dataDir}/latest-canonical.json`)).length} to ${dataDir}/latest-canonical.json`);
+    analysis.migrateCompression(dataDir, ".json", ".json.br", false);
+    analysis.migrateCompression(dataDir, ".json.gz", ".json.br");
+    const items = await analysis.replay(dataDir);
+    analysis.writeJSON(`${dataDir}/latest-canonical.json`, items, analysis.FILE_COMPRESSOR);
+    console.log(
+        `Wrote ${
+            analysis.readJSON(`${dataDir}/latest-canonical.json.${analysis.FILE_COMPRESSOR}`).length
+        } items to ${dataDir}/latest-canonical.json.${analysis.FILE_COMPRESSOR}`
+    );
+    if (h43zFile && fs.existsSync(h43zFile)) {
+        h43z.mergeWithLatestCanonical(h43zFile, `${dataDir}/latest-canonical.json`);
+    }
 })();

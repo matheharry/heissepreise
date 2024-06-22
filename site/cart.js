@@ -1,29 +1,107 @@
-async function load() {
-    const items = await loadItems();
-    const lookup = {};
-    for (item of items) {
-        lookup[item.id] = item;
+const { getQueryParameter, today } = require("./js/misc");
+const models = require("./model");
+const { Model } = require("./model/model");
+const { View } = require("./views/view");
+const { STORE_KEYS, stores } = require("./model/stores");
+require("./views");
+const { ProgressBar } = require("./views/progress-bar");
+const progressBar = new ProgressBar(STORE_KEYS.length);
+const { __ } = require("./browser_i18n");
+
+let carts = null;
+
+class CartModel extends Model {
+    constructor(cart, linked) {
+        super();
+        this.cart = cart;
+        this.items = cart.items;
+        this._filteredItems = [...this.items];
+        this.linked = linked;
     }
 
+    get filteredItems() {
+        return this._filteredItems;
+    }
+
+    set filteredItems(newItems) {
+        this._filteredItems = newItems;
+        this.notify();
+    }
+}
+
+class CartHeader extends View {
+    constructor() {
+        super();
+        this.innerHTML = `
+            <h1 class="text-2xl font-bold pb-2 pt-8 text-center">
+                <span x-id="name"></span>
+            </h1>
+            <a x-id="share" class="hidden cursor-pointer font-bold text-sm text-primary hover:underline block text-center mt-3">${__(
+                "Cart_Teilen"
+            )}</a>
+            <input x-id="save" class="hidden cursor-pointer font-bold text-sm text-primary block mx-auto mt-3" type="button" value="${__(
+                "Cart_Speichern"
+            )}">
+        `;
+
+        const elements = this.elements;
+        elements.save.addEventListener("click", () => {
+            const cart = this.model.cart;
+            let index = carts.findIndex((c) => c.name === cart.name);
+            if (index != -1) {
+                let newName = cart.name;
+                while (true) {
+                    newName = prompt(
+                        __("Cart_Warenkorb '{{name}}' existiert bereits. Bitte einen anderen Namen für den zu speichernden Warenkorb eingeben", {
+                            name: cart.name,
+                        }),
+                        cart.name + today()
+                    );
+                    if (!newName || newName.trim().length == 0) return;
+                    newName = newName.trim();
+                    if (newName != cart.name) {
+                        cart.name = newName;
+                        carts.push(cart);
+                        break;
+                    }
+                }
+            } else {
+                carts.push(cart);
+            }
+            models.carts.save();
+            location.href = location.pathname + "?name=" + encodeURIComponent(cart.name);
+        });
+    }
+
+    render() {
+        const cart = this.model.cart;
+        const elements = this.elements;
+        elements.name.innerText = __("Cart_Warenkorb {{name}}", { name: cart.name });
+        if (this.model.linked) {
+            elements.save.classList.remove("hidden");
+        } else {
+            elements.share.classList.remove("hidden");
+            let link = encodeURIComponent(cart.name) + ";";
+            for (const cartItem of cart.items) {
+                link += cartItem.store + cartItem.id + ";";
+            }
+            elements.share.href = "cart.html?cart=" + link + (this.stateToUrl ? this.stateToUrl() : "");
+        }
+    }
+}
+customElements.define("cart-header", CartHeader);
+
+function loadCart() {
     let cart = null;
+    let linked = false;
     const cartName = getQueryParameter("name");
     if (cartName) {
-        for (c of carts) {
+        for (const c of carts) {
             if (c.name == cartName) {
                 cart = c;
                 break;
             }
         }
-
-        // Update cart pricing info
-        let items = [];
-        for (cartItem of cart.items) {
-            const item = lookup[cartItem.id];
-            if (!item) items.push(cartItem);
-            else items.push(item);
-        }
-        cart.items = items;
-        saveCarts();
     }
 
     const cartDesc = getQueryParameter("cart");
@@ -32,164 +110,114 @@ async function load() {
         cart = {
             name: tokens[0],
             items: [],
-            linked: true
         };
         for (let i = 1; i < tokens.length; i++) {
-            const item = lookup[tokens[i]];
+            const item = models.items.lookup[tokens[i]];
             if (item) cart.items.push(item);
         }
-        let saveButton = document.querySelector("#save");
-        saveButton.classList.remove("hide");
-        saveButton.addEventListener("click", () => {
-            let index = carts.findIndex(c => c.name == cart.name);
-            if (index != -1) {
-                if (confirm("Existierenden Warenkorb '" + cart.name + " überschreiben?")) {
-                    carts[index] = cart;
-                }
-            } else {
-                carts.push(importedCart);
-            }
-            location.href = "/cart.html?name=" + encodeURIComponent(cart.name);
-        });
+        linked = true;
     }
 
     if (cart == null) {
-        alert("Warenkorb '" + cartName + "' existiert nicht.");
+        alert(__("Cart_Warenkorb '{{name}}' existiert nicht.", { name: cartName }));
         location.href = "carts.html";
     }
 
-    if (cart.name != "Momentum Eigenmarken Vergleich" && !cart.linked) showSearch(cart, items);
-
-    const canvasDom = document.querySelector("#chart");
-    document.querySelector("#sum").addEventListener("change", () => {
-        showCharts(canvasDom, cart.items);
-    });
-    const filtersStore = document.querySelector("#filters-store");
-    filtersStore.innerHTML = STORE_KEYS.map(store => `<label><input id="${store}" type="checkbox" checked="true">${stores[store].name}</label>`).join(" ");
-    filtersStore.querySelectorAll("input").forEach(input => {
-        input.addEventListener("change", () => showCart(cart));
-    });
-    document.querySelector("#filter").addEventListener("input", () => showCart(cart));
-    showCart(cart);
+    return new CartModel(cart, linked);
 }
 
-function filter(cartItems) {
-    const query = document.querySelector("#filter").value.trim();
-    const storeCheckboxes = STORE_KEYS.map(store => document.querySelector(`#${store}`));
-    const checkedStores = STORE_KEYS.filter((store, i) => storeCheckboxes[i].checked)
-    let items = [];
-    if (query.charAt(0) != "!") {
-        for (item of cartItems) {
-            if (!checkedStores.includes(item.store)) continue;
-            items.push(item);
-        }
+(async () => {
+    await models.load(() => progressBar.addStep());
+    carts = models.carts.carts;
+    const cart = loadCart();
+
+    const elements = View.elements(document.body);
+    const cartHeader = elements.cartHeader;
+    cartHeader.model = cart;
+
+    const cartFilter = elements.cartFilter;
+    const cartList = cart.linked ? elements.linkedCartList : elements.cartList;
+    STORE_KEYS.forEach((store) => {
+        cartFilter.elements[store].checked = true;
+    });
+    cartList.elements.numItemsLabel.innerHTML = `<strong>${__("Cart_Artikel")}:</strong>`;
+    cartList.elements.enableChart.checked = models.items.length < 2000;
+    cartList.elements.chart.elements.sumStores.checked = models.items.length < 2000;
+
+    if (cart.items.length == 0) {
+        elements.noItems.classList.remove("hidden");
     } else {
-        items = cartItems;
+        cartFilter.classList.remove("hidden");
+        cartList.classList.remove("hidden");
     }
-    if (query.length >= 3) items = searchItems(items, document.querySelector("#filter").value, checkedStores, false, 0, 10000, false, false);
-    return items;
-}
 
-function showSearch(cart, items) {
-    const searchDom = document.querySelector("#search");
-    searchDom.innerHTML = "";
-    newSearchComponent(searchDom, items, null, (item) => {
-        // This would filter all items in the cart from the search
-        // result.
-        /*for (let i = 0; i < cart.items.length; i++) {
-            const cartItem = cart.items[i];
-            if (cartItem.id == item.id) return false;
-        }*/
-        return true;
-    }, (header) => {
-        header.append(dom("th", ""));
-        return header;
-    }, (item, itemDom) => {
-        const addButton = dom("input");
-        addButton.setAttribute("type", "button");
-        addButton.setAttribute("value", "+");
-        const cell = dom("td", "");
-        cell.appendChild(addButton);
-        itemDom.appendChild(cell);
+    cartList.removeCallback = (item) => models.carts.save();
+    cartList.upCallback = (item) => models.carts.save();
+    cartList.downCallback = (item) => models.carts.save();
 
-        addButton.addEventListener("click", () => {
-            cart.items.push(item);
-            saveCarts();
-            showCart(cart);
-        });
+    const productsFilter = elements.productsFilter;
+    const productsList = elements.productsList;
+    if (!cart.linked) {
+        productsFilter.classList.remove("hidden");
+        productsList.classList.remove("hidden");
+    }
 
-        return itemDom;
+    productsList.addCallback = (item) => {
+        cart.items.push(item);
+        models.carts.save();
+        cartFilter.filter();
+        cartFilter.classList.remove("hidden");
+        cartList.classList.remove("hidden");
+    };
+
+    const itemsFilter = cartFilter;
+    const itemsList = cartList;
+    const itemsChart = cartList.querySelector("items-chart");
+    itemsList.elements.sort.value = "store-and-name";
+    let baseUrl = location.href.split("&")[0];
+
+    const stateToUrl = () => {
+        const filterState = itemsFilter.shareableState;
+        const listState = itemsList.shareableState;
+        const chartState = itemsChart.shareableState;
+        const chartedItems = cart.filteredItems
+            .filter((item) => item.chart)
+            .map((item) => item.store + item.id)
+            .join(";");
+        return baseUrl + "&f=" + filterState + "&l=" + listState + "&c=" + chartState + "&d=" + chartedItems;
+    };
+    cartHeader.stateToUrl = stateToUrl;
+    itemsFilter.addEventListener("x-change", () => {
+        const url = stateToUrl();
+        history.pushState({}, null, url);
+        cartHeader.render();
     });
-}
-
-function showCharts(canvasDom, items) {
-    let itemsToShow = [];
-
-    if (document.querySelector("#sum").checked && items.length > 0) {
-        itemsToShow.push({
-            name: "Preissumme",
-            priceHistory: calculateOverallPriceChanges(items)
-        });
-    }
-
-    items.forEach((item) => {
-        if (item.chart) itemsToShow.push(item);
+    itemsList.addEventListener("x-change", () => {
+        const url = stateToUrl();
+        history.pushState({}, null, url);
+        cartHeader.render();
     });
 
-    showChart(canvasDom, itemsToShow);
-}
+    const f = getQueryParameter("f");
+    const l = getQueryParameter("l");
+    const c = getQueryParameter("c");
+    const d = getQueryParameter("d");
 
-function showCart(cart) {
-    let link = cart.name + ";"
-    for (cartItem of cart.items) {
-        link += cartItem.id + ";";
-    }
-
-    document.querySelector("#cartname").innerHTML = "Warenkorb '" + cart.name + `' <a href="cart.html?cart=${link}">Teilen</a>`;
-    const canvasDom = document.querySelector("#chart");
-    let items = filter(cart.items);
-    if (items.length == cart.items.length) {
-        document.querySelector("#numitems").innerText = `${cart.items.length} Artikel`;
-    } else {
-        document.querySelector("#numitems").innerText = `${items.length} / ${cart.items.length} Artikel`;
-    }
-    showCharts(canvasDom, items);
-
-    const itemTable = document.querySelector("#cartitems");
-    itemTable.innerHTML = "";
-    const header = dom("thead", `<tr><th>Kette</th><th>Name</th><th>Menge</th><th>Preis</th><th></th></tr>`);
-    itemTable.append(header);
-
-    items.forEach((cartItem, idx) => {
-        const itemDom = itemToDOM(cartItem)
-
-        const cell = dom("td", "");
-        const showCheckbox = dom("input", "");
-        showCheckbox.setAttribute("type", "checkbox");
-        if (cartItem.chart) showCheckbox.setAttribute("checked", true);
-        itemDom.append(showCheckbox);
-        showCheckbox.addEventListener("change", () => {
-            cartItem.chart = showCheckbox.checked;
-            saveCarts();
-            showCharts(canvasDom, cart.items);
-        });
-        cell.append(showCheckbox);
-
-        if (cart.name != "Momentum Eigenmarken Vergleich" && !cart.linked) {
-            const deleteButton = dom("input", "");
-            deleteButton.setAttribute("type", "button");
-            deleteButton.setAttribute("value", "-");
-            itemDom.append(deleteButton);
-            deleteButton.addEventListener("click", () => {
-                cart.items.splice(idx, 1);
-                saveCarts();
-                showCart(cart)
-            })
-            cell.appendChild(deleteButton);
+    if (f) itemsFilter.shareableState = f;
+    if (l) itemsList.shareableState = l;
+    if (c) itemsChart.shareableState = c;
+    if (d) {
+        cart.items.lookup = {};
+        for (const item of cart.items) cart.items.lookup[item.store + item.id] = item;
+        for (const id of d.split(";")) {
+            cart.items.lookup[id].chart = true;
         }
-        itemDom.append(cell);
-        itemTable.append(itemDom);
-    });
-}
-
-load();
+        const url = stateToUrl();
+        history.pushState({}, null, url);
+        cartHeader.render();
+    }
+    cartList.model = cartFilter.model = cart;
+    productsList.model = productsFilter.model = models.items;
+    if (c || d) itemsChart.render();
+    cartFilter.filter();
+})();

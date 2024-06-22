@@ -1,95 +1,45 @@
-let changeDates = [];
-let items = [];
+const { getQueryParameter } = require("./js/misc");
+const model = require("./model");
+require("./views");
 
-async function load() {
-    const today = currentDate();
-    items = await loadItems();
-    items.sort((a, b) => {
-        if (a.store < b.store) {
-            return -1;
-        } else if (a.store > b.store) {
-            return 1;
-        }
+const { STORE_KEYS } = require("./model/stores");
+const { ProgressBar } = require("./views/progress-bar");
+const progressBar = new ProgressBar(STORE_KEYS.length);
 
-        if (a.name < b.name) {
-            return -1;
-        } else if (a.name > b.name) {
-            return 1;
-        }
+(async () => {
+    await model.load(() => progressBar.addStep());
+    const itemsFilter = document.querySelector("items-filter");
+    const itemsList = document.querySelector("items-list");
+    const itemsChart = document.querySelector("items-chart");
+    itemsList.elements.sort.value = "store-and-name";
 
-        return 0;
-    });
+    const stateToUrl = (event) => {
+        const filterState = itemsFilter.shareableState;
+        const listState = itemsList.shareableState;
+        const chartState = itemsChart.shareableState;
+        const chartedItems = model.items.filteredItems
+            .filter((item) => item.chart)
+            .map((item) => item.store + item.id)
+            .join(";");
+        history.pushState({}, null, location.pathname + "?f=" + filterState + "&l=" + listState + "&c=" + chartState + "&d=" + chartedItems);
+    };
 
-    const dates = {};
-    for (item of items) {
-        for (price of item.priceHistory) {
-            dates[price.date] = dates[price.date] ? dates[price.date] + 1 : 1;
-        }
-    }
+    itemsFilter.addEventListener("x-change", stateToUrl);
+    itemsList.addEventListener("x-change", stateToUrl);
 
-    const dateNames = Object.keys(dates).sort((a, b) => b.localeCompare(a));
-    const dateSelection = document.querySelector("#dates");
-    for (dateName of dateNames) {
-        const option = dom("option", dateName + " (" + dates[dateName] + ")");
-        option.setAttribute("value", dateName);
-        dateSelection.appendChild(option);
-    }
+    const f = getQueryParameter("f");
+    const l = getQueryParameter("l");
+    const c = getQueryParameter("c");
+    const d = getQueryParameter("d");
 
-    showResults(items, dateNames[0]);
-
-    dateSelection.addEventListener("change", () => {
-        showResults(items, dateSelection.value);
-    })
-    document.querySelector("#increases").addEventListener("change", () => {
-        showResults(items, dateSelection.value);
-    })
-    document.querySelector("#decreases").addEventListener("change", () => {
-        showResults(items, dateSelection.value);
-    })
-}
-
-function showResults(items, today) {
-    const increases = document.querySelector("#increases").checked;
-    const decreases = document.querySelector("#decreases").checked;
-    const fullHistory = document.querySelector("#fullhistory").checked;
-    const changedItems = [];
-    for (item of items) {
-        if (item.priceHistory.length < 2) continue;
-
-        for (let i = 0; i < item.priceHistory.length; i++) {
-            if (item.priceHistory[i].date == today && i + 1 < item.priceHistory.length) {
-                if (increases && (item.priceHistory[i].price > item.priceHistory[i + 1].price)) changedItems.push(item);
-                if (decreases && (item.priceHistory[i].price < item.priceHistory[i + 1].price)) changedItems.push(item);
-            }
+    if (f) itemsFilter.shareableState = f;
+    if (l) itemsList.shareableState = l;
+    if (c) itemsChart.shareableState = c;
+    if (d) {
+        for (const id of d.split(";")) {
+            model.items.lookup[id].chart = true;
         }
     }
-
-    const table = document.querySelector("#result");
-    table.innerHTML = "";
-    const header = dom("thead", `
-        <tr><th>Kette</th><th>Name</th><th>Menge</th><th>Preis 📈</th></tr>
-    `)
-    const showHideAll = header.querySelectorAll('th:nth-child(4)')[0];
-    showHideAll.style["cursor"] = "pointer";
-    showHideAll.showAll = true;
-    showHideAll.addEventListener("click", () => {
-        table.querySelectorAll(".priceinfo").forEach(el => showHideAll.showAll ? el.classList.remove("hide") : el.classList.add("hide"));
-        showHideAll.showAll = !showHideAll.showAll;
-    })
-
-    table.appendChild(header);
-
-    for (item of changedItems) {
-        item = JSON.parse(JSON.stringify(item));
-        if (!fullHistory) {
-            let priceHistory = [];
-            for(let i = 0;i < item.priceHistory.length; i++) {
-                priceHistory.push(item.priceHistory[i]);
-                if (item.priceHistory[i].date == today) break;
-            }
-        }
-        table.appendChild(itemToDOM(item));
-    }
-}
-
-load();
+    itemsFilter.model = itemsList.model = model.items;
+    itemsFilter.fireChangeEvent();
+})();
